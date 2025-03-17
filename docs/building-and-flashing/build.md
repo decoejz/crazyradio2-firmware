@@ -57,7 +57,7 @@ pip install -r zephyr/scripts/requirements.txt
 
 To build the firmware:
 ```bash
-west build -b bitcraze_crazyradio_2 
+west build -b bitcraze_crazyradio_2 -- -DCONFIG_LOAD_CFG=y
 ```
 
 To build the legacy USB protocol (Crazyradio-PA compatible) firmware:
