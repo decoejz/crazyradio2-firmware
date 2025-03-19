@@ -39,6 +39,8 @@
 #include "rpc.h"
 #include "api.h"
 
+#include "sign_scheme.h" 
+
 #include <tinycbor/cbor.h>
 #include <tinycbor/cbor_buf_reader.h>
 #include <tinycbor/cbor_buf_writer.h>
@@ -46,6 +48,9 @@
 #include <nrfx_clock.h>
 
 #include <zephyr/logging/log.h>
+
+#define SIGNED_MESSAGE_MAX_LEN 187//(4 + USB_MTU + 2048)
+
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 int startHFClock(void)
@@ -56,15 +61,24 @@ int startHFClock(void)
 
 #ifndef CONFIG_LEGACY_USB_PROTOCOL
 K_MUTEX_DEFINE(usb_send_buffer_mutex);
-void send_usb_message(char* data, size_t length) {
-	static struct crusb_message message;
-	if (length > USB_MTU) {
+void send_usb_message(char* data, size_t length) 
+{
+	uint8_t msg_raw[length];
+	pki_t public_key = read_key(PUBLIC_KEY);
+
+	int raw_len = verify(msg_raw, (uint8_t *)data, length, public_key);
+    if (raw_len <= 0) {
+        LOG_ERR("Invalid signature. Discarding message.");
+        return;
+    } else if (raw_len > USB_MTU) {
 		return;
 	}
 
+	static struct crusb_message message;
+
 	k_mutex_lock(&usb_send_buffer_mutex, K_FOREVER);
-	memcpy(message.data, data, length);
-	message.length = length;
+	memcpy(message.data, msg_raw, raw_len);
+	message.length = raw_len;
 	crusb_send(&message);
 	k_mutex_unlock(&usb_send_buffer_mutex);
 }
@@ -121,13 +135,20 @@ void main(void)
 
     // RPC loop
     while(1) {
-        static struct crusb_message message;
-		static char response_buffer[USB_MTU];
+        static struct crusb_message message;		
         crusb_receive(&message);
 		LOG_INF("Received %d byte message from usb!", message.length);
 
-		rpc_error_t error = rpc_dispatch(&crazyradio2_rpc_api, message.data, message.length, usb_transport, response_buffer);
-		LOG_INF("Dispatching result: %d", error);
+		pki_t private_key = read_key(PRIVATE_KEY);
+		static char signed_message[SIGNED_MESSAGE_MAX_LEN];
+        int signed_len = sign((uint8_t *)signed_message, message.data, message.length, private_key);
+		
+		if (signed_len > 0) {
+            rpc_error_t error = rpc_dispatch(&crazyradio2_rpc_api, (uint8_t *)signed_message, signed_len, usb_transport, signed_message);
+            LOG_INF("Dispatching result: %d", error);
+        } else {
+            LOG_ERR("Failed to sign message");
+        }
     }
 #else
 	while(1) {
